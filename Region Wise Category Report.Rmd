@@ -1,0 +1,1962 @@
+---
+title: "`r params$report_title`"
+params:
+  report_title: "Default Title"
+output: 
+  # pdf_document:
+  #   toc: yes
+  word_document:
+    toc: yes
+    fig_caption: no
+    reference_docx: template_final.docx
+  # officedown::rdocx_document:
+  #   toc: yes
+  #   reference_docx : template_final.docx
+date: "2023 - Full Year"
+always_allow_html: true
+# rmarkdown::render(input = "Region Wise Category Report.Rmd", params = list(report_title = "Category Report xx"), output_file = "Category Report xx 2023.docx")
+---
+
+```{r setup, include=FALSE}
+# Let's setup a few things.
+
+rm(list = ls())
+library(knitr)
+library(glue)
+library(stringr)
+library(officedown)
+library(officer)
+library(ggplot2)
+library(plotly)
+library(data.table)
+library(tidyverse)
+library(broom)
+library(flextable)
+library(shinydashboard)
+library(readxl)
+library(dplyr)
+library(tidyquant)
+library(rnaturalearth)
+library(sf)
+library(countrycode)
+
+#Read config file
+yaml_path = file.path(getwd(), "config.yaml")
+config = yaml::read_yaml(yaml_path)
+
+# set chunks defaults
+knitr::opts_chunk$set(echo       = FALSE,
+                      message    = FALSE,
+                      warning    = FALSE)
+
+# set flextable defaults
+knitr::opts_chunk$set(echo = TRUE, fig.cap = TRUE)
+options(knitr. = "0")
+set_flextable_defaults(
+  font.family = "Arial",
+  font.size = 9,
+  theme_fun = "theme_box",
+  na_str = 0,
+  big.mark = ","
+)
+
+# Formatting properties for specific paragraphs
+centeredP = fp_par(text.align = "center")
+
+#Fit to Width
+FitFlextableToPage = function(ft, pgwidth = 7) {
+  ft_out = ft
+  ft_out = width(ft_out,
+                 width = dim(ft_out)$widths * pgwidth / flextable_dim(ft_out)$widths)
+  return(ft_out)
+}
+
+FitFlextableTolandscape = function(ft, pgwidth = 10) {
+  ft_out = ft
+  ft_out = width(ft_out,
+                 width = dim(ft_out)$widths * pgwidth / flextable_dim(ft_out)$widths)
+  return(ft_out)
+}
+
+table_border = fp_border(color = "black", width = 2)
+
+```
+
+```{r category_data_load, echo=FALSE}
+current_year = config$current_year
+previous_year = current_year - 1
+region_filter = config$region
+# filename = config$filename
+xlsx_path = file.path(getwd(), config$region_folder)
+
+# Load Data
+# full_data = read_xlsx(filename)
+list_xlsx_files = list.files(path = xlsx_path, full.names = TRUE)
+
+read_xlsx_file = function(file) {
+  if(is.na(file)) stop('No File Path')
+  df = readxl::read_excel(file)
+  df
+}
+
+# Loop to read all datafile
+#full_data_list = purrr::map(.x = list_xlsx_files, .f = read_xlsx_file)
+data = purrr::map_dfr(.x = list_xlsx_files, read_xlsx_file)
+
+# Uniform Column Name
+data = data %>% rename_all(make.names)
+
+# Filter Data based on Year
+data = data %>%
+  filter(Year %in% c(current_year, previous_year)) %>%
+  filter(Region %in% c(region_filter))
+
+# Parent Vendor ID and Name
+Vendor_ID_Name = data %>%
+  group_by(ElectrifAi_ParentID, Vendor.Parent) %>%
+  summarise()
+```
+
+```{r additional_data_load, echo=FALSE}
+# Load Validation Data
+validation_data = read_xlsx(config$validation_data)
+validation_data = validation_data %>% 
+  rename_all(make.names) %>%
+  filter(Region %in% c(region_filter))
+
+# Adding Validation Spend
+validation_data = validation_data %>% 
+  mutate(validation_spend = if_else(
+  Validation.Status == 'AGREED',
+  ((Spend.Total * 95) / 100),
+  if_else(Validation.Status == 'TO BE REVIEWED', ((Spend.Total *
+                                                     70) / 100), 0)
+))
+
+# Additional Data point
+vendor_description = read_xlsx(config$additional_info)
+vendor_description = vendor_description %>% rename_all(make.names)
+
+# Load World Data for Map View
+world = ne_countries(scale = "large", returnclass = "sf") %>%
+  filter(admin != "Antarctica")
+```
+
+<!-- # Table of content {.unlisted .unnumbered} -->
+<!-- ```{r TOC, echo = FALSE, ft.align="left"} -->
+<!-- block_toc() -->
+<!-- ``` -->
+
+\newpage
+# Summary
+## Total Spend & Vendor Summary
+```{r KPI_Table, echo = FALSE, ft.align="left"}
+KPI = data %>%
+  group_by(Year) %>%
+  select(Spend.Total, ElectrifAi_ParentID) %>%
+  summarise(
+    total_spend = round(sum(Spend.Total)),
+    vendor_parent = n_distinct(ElectrifAi_ParentID)
+  )
+
+
+KPI_Table = as_tibble(t(KPI %>%
+                          mutate()))
+
+colnames(KPI_Table) = KPI_Table[1, ]
+KPI_Table = KPI_Table[-1,]
+KPI_Table$change = round(KPI_Table[[as.character(current_year)]] - KPI_Table[[as.character(previous_year)]])
+KPI_Table = KPI_Table %>%
+  mutate(change_percent = scales::percent(change / KPI_Table[[as.character(previous_year)]], suffix = "%"))
+
+KPI_val = c("Total Spend", "# Vendor Parent")
+KPI_Table$KPI = KPI_val
+KPI_Table = KPI_Table %>%
+  mutate(change_formated = change) %>%
+  select(KPI, everything())
+
+KPI_Table[[as.character(current_year)]][1] = scales::dollar(KPI_Table[[as.character(current_year)]][1], scale = .000001, prefix = "$", suffix = "MM")
+
+KPI_Table[[as.character(previous_year)]][1] = scales::dollar(KPI_Table[[as.character(previous_year)]][1], scale = .000001, prefix = "$", suffix = "MM")
+
+KPI_Table[[as.character("change_formated")]][1] = scales::dollar(KPI_Table[[as.character("change_formated")]][1], scale = .000001, prefix = "$", suffix = "MM")
+
+KPI_Table %>%
+  flextable(col_keys = c(
+    "KPI",
+    as.character(current_year),
+    as.character(previous_year),
+    "change_formated",
+    "change_percent"
+  )) %>%
+  theme_booktabs() %>%
+  set_header_labels(
+    values = list(change_formated = "Movement (Increase/Decrease)", change_percent = "Movement % (Increase/Decrease)")
+  ) %>%
+  FitFlextableToPage() %>%
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  bg(j = "KPI", bg = '#A7C6DD', part = 'body') %>%
+  bold(j = "KPI", bold = TRUE, part = 'all') %>%
+  color(
+    i = ~ change < 0,
+    j = c("change_formated", "change_percent"),
+    color = "#00AA5A",
+    part = "body"
+  ) %>%
+  color(
+    i = ~ change > 0,
+    j = c("change_formated", "change_percent"),
+    color = "#D33F6A",
+    part = "body"
+  ) %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  align(align = 'center', part = 'all')
+```
+
+```{r KPI_Comments, echo = FALSE, ft.align="left"}
+run_linebreak()
+# Create the comments
+data.frame(
+  Comments = c(
+    glue("- Total Spend for {current_year} {ifelse(KPI_Table$change_percent[1] > 0, 'increased', 'decreased')} by {KPI_Table$change_percent[1]} to {KPI_Table[[as.character(current_year)]][1]}."),
+    glue("- Total parents {ifelse(KPI_Table$change_percent[2] > 0, 'increased', 'decreased')} by {KPI_Table$change_percent[2]} to {KPI_Table[[as.character(current_year)]][2]}."),
+    glue("- Change was majorly led by xxxxxx due to xxxxxx")
+  )
+) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+## YOY Spend Movement
+```{r YOY_Spend_Movement_plot, fig.dim = c(7, 2), echo = FALSE}
+data %>%
+  group_by(Year, Month) %>%
+  select(Spend.Total) %>%
+  summarise(spend_total = sum(Spend.Total)) %>%
+  mutate(Month = factor(
+    Month,
+    levels = c(
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec"
+    )
+  )) %>%
+  arrange(Year, Month) %>%
+  mutate(Year = as.factor(Year)) %>%
+  ggplot(
+       aes(
+         x = Month,
+         y = spend_total,
+         group = Year,
+         color = Year
+       )) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(labels = scales::dollar_format(
+    scale = .000001,
+    suffix = "MM",
+    prefix = "$"
+  )) +
+  labs(#title="Monthly Spend Over Year",
+    x = "Month",
+    y = "Total Spend") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold"),
+    legend.text = element_text(size = 7),
+    legend.title = element_text(size = 8.5),
+    axis.title.x = element_text(size = 8.5),
+    axis.title.y = element_text(size = 8.5),
+    axis.text.x = element_text(size = 8.5),
+    axis.text.y = element_text(size = 8.5) 
+  )
+```
+
+## Spend Movement (Increase/Decrease) by Business Unit
+```{r BU_Table, echo = FALSE, ft.align="left"}
+BU = data %>%
+  pivot_table(
+    .rows = Business.Unit,
+    .columns = Year,
+    .values = ~ sum(Spend.Total)
+  ) %>%
+  mutate_at(vars(c(as.character(previous_year), as.character(current_year))), ~replace_na(., 0)) %>%
+  janitor::adorn_totals("row") %>%
+  mutate(
+    change = .data[[sym(as.character(current_year))]] - .data[[sym(as.character(previous_year))]],
+    change_percent = (change / .data[[sym(as.character(previous_year))]])
+  ) %>%
+  arrange(Business.Unit == "Total", desc(change)) %>%
+  mutate(change_formated = change)
+
+BU %>%
+  flextable(
+    col_keys = c(
+      "Business.Unit",
+      as.character(current_year),
+      as.character(previous_year),
+      "change_formated",
+      "change_percent"
+    )
+  ) %>%
+  set_formatter(values = c(
+    setNames(list(scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM")), as.character(current_year)),
+    setNames(list(scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM")), as.character(previous_year)),
+    change_formated = scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM"),
+    change_percent = scales::percent_format(accuracy = 1, suffix = "%")
+    )) %>%
+  theme_booktabs() %>%
+  FitFlextableToPage() %>%
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  # bold(j = "Business.Unit", bold = TRUE, part = 'header') %>%
+  # bg(j = "Business.Unit", bg = '#A7C6DD', part = 'all') %>%
+  bg(
+    i = ~ change < 0,
+    j = c("change_formated", "change_percent"),
+    bg = "#ACDDB6",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ change_percent > 0,
+    j = c("change_formated", "change_percent"),
+    bg = "#FFA6AA",
+    part = "body"
+  ) %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  bg(bg = "#A7C6DD", part = "body", i = ~ Business.Unit == "Total") %>%
+  bold(bold = TRUE, part = "body", i = ~ Business.Unit == "Total") %>%
+  set_header_labels(
+    values = list(
+      change_formated = "Movement (Increase/Decrease)",
+      change_percent = "Movement % (Increase/Decrease)",
+      Business.Unit = "Business Unit"
+    )
+  ) %>%
+  align(align = 'center', part = 'all')
+
+```
+
+```{r BU_Comments, echo = FALSE, ft.align="left"}
+run_linebreak()
+# Create the comments
+data.frame(Comments = c(
+  glue(
+    "- Spend by {BU$Business.Unit[1]} and {BU$Business.Unit[2]} increased by {scales::dollar(BU$change[1], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(BU$change_percent[1])}) to {scales::dollar(BU[[as.character(current_year)]][1], scale = .000001, prefix = '$', suffix = 'MM')} and {scales::dollar(BU$change[2], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(BU$change_percent[2])}) to {scales::dollar(BU[[as.character(current_year)]][2], scale = .000001, prefix = '$', suffix = 'MM')} respectively,"
+  ),
+  glue(
+    "- Whereas, ",
+    if (BU$change[nrow(BU) - 2] < 0 &&
+        BU$Business.Unit[nrow(BU) - 2] != c("To Be Identified", "Total"))
+      glue(
+        "spend by {BU$Business.Unit[nrow(BU)-2]} decreased by {scales::dollar(BU$change[nrow(BU)-2], scale = .000001, prefix = '$', suffix = 'MM')}  ({scales::percent(BU$change_percent[nrow(BU)-2])}) to {scales::dollar(BU[[as.character(current_year)]][nrow(BU)-2], scale = .000001, prefix = '$', suffix = 'MM')}"
+      )
+    else
+      "",
+    if (BU$change[nrow(BU) - 1] < 0 &&
+        BU$Business.Unit[nrow(BU) - 1] != c("To Be Identified", "Total"))
+      glue(
+        " spend by {BU$Business.Unit[nrow(BU)-1]} decreased by {scales::dollar(BU$change[nrow(BU)-1], scale = .000001, prefix = '$', suffix = 'MM')}  ({scales::percent(BU$change_percent[nrow(BU)-1])}) to {scales::dollar(BU[[as.character(current_year)]][nrow(BU)-1], scale = .000001, prefix = '$', suffix = 'MM')}"
+      )
+    else
+      ""
+  ),
+  glue("- Change was majorly led by xxxxxx due to xxxxxx")
+)) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+\newpage
+## Spend Movement (Increase/Decrease) by Division
+```{r DIV_Table, echo = FALSE, ft.align="left"}
+Div = data %>%
+  group_by(Business.Unit, Division, Year) %>%
+  summarize(Spend.Total = sum(Spend.Total, na.rm = TRUE)) %>%
+  pivot_wider(names_from = Year, values_from = Spend.Total) %>%
+  mutate_at(vars(c(as.character(previous_year), as.character(current_year))), ~replace_na(., 0)) %>%
+  janitor::adorn_totals("row") %>%
+  mutate(
+    change = replace_na(.data[[sym(as.character(current_year))]] - .data[[sym(as.character(previous_year))]], 0),
+    change_percent = ifelse(
+      change / .data[[sym(as.character(previous_year))]] == Inf,
+      NA_real_,
+      (change / .data[[sym(as.character(previous_year))]])
+    )
+  ) %>%
+  arrange(Division == "Total", desc(change))
+
+Div %>%
+  arrange(Division == "Total", Business.Unit, desc(change)) %>%
+  mutate(change_formated = change) %>%
+  flextable(
+    col_keys = c(
+      "Business.Unit", 
+      "Division",
+      as.character(current_year),
+      as.character(previous_year),
+      "change_formated",
+      "change_percent"
+    )
+  ) %>%
+  set_formatter(values = c(
+    setNames(list(scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM")), as.character(current_year)),
+    setNames(list(scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM")), as.character(previous_year)),
+    change_formated = scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM"),
+    change_percent = scales::percent_format(accuracy = 1, suffix = "%")
+  )) %>%
+  theme_booktabs() %>%
+  width(j = c(
+    as.character(current_year),
+    as.character(previous_year),
+    "change_formated",
+    "change_percent"), width = 0.72) %>%
+  FitFlextableToPage() %>%
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  # bold(j = "Business.Unit", bold = TRUE, part = 'header') %>%
+  # bg(j = "Business.Unit", bg = '#A7C6DD', part = 'all') %>%
+  bg(
+    i = ~ change < 0,
+    j = c("change_formated", "change_percent"),
+    bg = "#ACDDB6",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ change >= 0,
+    j = c("change_formated", "change_percent"),
+    bg = "#FFA6AA",
+    part = "body"
+  ) %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  bg(bg = "#A7C6DD", part = "body", i = ~ Business.Unit == "Total") %>%
+  bold(bold = TRUE, part = "body", i = ~ Business.Unit == "Total") %>%
+  set_header_labels(
+    values = list(
+      Business.Unit = "Business Unit",
+      change_formated = "Movement (Increase/Decrease)",
+      change_percent = "Movement % (Increase/Decrease)"
+    )
+  ) %>%
+  align(align = 'center', part = 'all')
+
+```
+
+```{r Div_Comments, echo = FALSE, ft.align="left"}
+run_linebreak()
+# Create the comments
+data.frame(Comments = c(
+  glue(
+    "- Spend by {Div$Division[1]}, {Div$Division[2]}, {Div$Division[3]}, {Div$Division[4]} and {Div$Division[5]} increased by {scales::dollar(Div$change[1], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[1])}) to {scales::dollar(Div[[as.character(current_year)]][1], scale = .000001, prefix = '$', suffix = 'MM')}, {scales::dollar(Div$change[2], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[2])}) to {scales::dollar(Div[[as.character(current_year)]][2], scale = .000001, prefix = '$', suffix = 'MM')}, {scales::dollar(Div$change[3], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[3])}) to {scales::dollar(Div[[as.character(current_year)]][3], scale = .000001, prefix = '$', suffix = 'MM')}, {scales::dollar(Div$change[4], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[4])}) to {scales::dollar(Div[[as.character(current_year)]][4], scale = .000001, prefix = '$', suffix = 'MM')} and {scales::dollar(Div$change[5], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[5])}) to {scales::dollar(BU[[as.character(current_year)]][5], scale = .000001, prefix = '$', suffix = 'MM')} respectively."
+  ),
+  glue(
+    "- Whereas ",
+    if (Div$change[nrow(Div) - 5] < 0 &&
+        Div$Division[nrow(Div) - 5] != c("To Be Identified", "Total"))
+      glue(
+        "spend by {Div$Division[nrow(Div)-5]} decreased by {scales::dollar(Div$change[nrow(Div)-5], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[nrow(Div)-5])}) to  {scales::dollar(Div[[as.character(current_year)]][nrow(Div)-5], scale = .000001, prefix = '$', suffix = 'MM')}"
+      )
+    else
+      "",
+    if (Div$change[nrow(Div) - 4] < 0 &&
+        Div$Division[nrow(Div) - 4] != c("To Be Identified", "Total"))
+      glue(
+        ", {Div$Division[nrow(Div)-4]} by {scales::dollar(Div$change[nrow(Div)-4], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[nrow(Div)-4])}) to  {scales::dollar(Div[[as.character(current_year)]][nrow(Div)-4], scale = .000001, prefix = '$', suffix = 'MM')}"
+      )
+    else
+      "",
+    if (Div$change[nrow(Div) - 3] < 0 &&
+        Div$Division[nrow(Div) - 3] != c("To Be Identified", "Total"))
+      glue(
+        ", {Div$Division[nrow(Div)-3]} by {scales::dollar(Div$change[nrow(Div)-3], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[nrow(Div)-3])}) to  {scales::dollar(Div[[as.character(current_year)]][nrow(Div)-3], scale = .000001, prefix = '$', suffix = 'MM')}"
+      )
+    else
+      "",
+    if (Div$change[nrow(Div) - 2] < 0 &&
+        Div$Division[nrow(Div) - 2] != c("To Be Identified", "Total"))
+      glue(
+        ", {Div$Division[nrow(Div)-2]} by {scales::dollar(Div$change[nrow(Div)-2], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[nrow(Div)-2])}) to  {scales::dollar(Div[[as.character(current_year)]][nrow(Div)-2], scale = .000001, prefix = '$', suffix = 'MM')}"
+      )
+    else
+      "",
+    if (Div$change[nrow(Div) - 1] < 0 &&
+        Div$Division[nrow(Div) - 1] != c("To Be Identified", "Total"))
+      glue(
+        ", {Div$Division[nrow(Div)-1]} by {scales::dollar(Div$change[nrow(Div)-1], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[nrow(Div)-1])}) to  {scales::dollar(Div[[as.character(current_year)]][nrow(Div)-1], scale = .000001, prefix = '$', suffix = 'MM')}"
+      )
+    else
+      "",
+    if (Div$change[nrow(Div)] < 0 &&
+        Div$Division[nrow(Div)] != c("To Be Identified",  "Total"))
+      glue(
+        ", {Div$Division[nrow(Div)]} by {scales::dollar(Div$change[nrow(Div)], scale = .000001, prefix = '$', suffix = 'MM')} ({scales::percent(Div$change_percent[nrow(Div)])}) to  {scales::dollar(Div[[as.character(current_year)]][nrow(Div)], scale = .000001, prefix = '$', suffix = 'MM')}"
+      )
+    else
+      ""
+  )
+)) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+
+\newpage
+# Classification Accuracy
+## Accuracy based on Spend Value
+```{r Accuracy_SpendValue,  fig.dim = c(7, 2.5), echo = FALSE, ft.align="left"}
+category_filter = unique(data$Category)
+
+Accuracy_SpendValue = validation_data %>%
+  filter(Category %in% str_to_title(category_filter)) %>%
+  group_by(Year) %>%
+  select(Spend.Total, validation_spend) %>%
+  summarise(
+    spend_total = sum((Spend.Total), na.rm = TRUE),
+    validation_total = sum((validation_spend), na.rm = TRUE),
+    spend_percent = validation_total / spend_total,
+    spend_percent_lab = scales::percent(validation_total / spend_total, suffix = "%", accuracy = 1)
+  ) %>%
+  mutate(Year = as.factor(Year))
+
+Accuracy_SpendValue %>% 
+  ggplot(aes(x = Year, y = spend_percent)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(
+    aes(label = spend_percent_lab),
+    vjust = 1.6,
+    color = "white",
+    size = 3.5
+  ) +
+  scale_y_continuous(labels = scales::percent_format(
+    suffix = "%",
+    accuracy = 1
+  ), limits = c(0,1)) +
+  labs(# title='Accuracy based on Spend Value',
+    x = 'Year',
+    y = 'Classification Accuracy') +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(size = 8.5),
+    legend.position = "none",
+    text = element_text(face = "bold"),
+    # axis.text.y = element_text(size = 8.5),
+    axis.text.y = element_blank(),
+    # axis.title.x = element_text(size = 8.5),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 8.5)
+  )
+```
+
+```{r Spend_Accuracy_Comments, echo = FALSE, ft.align="left"}
+run_linebreak()
+# Create the comments
+data.frame(
+  Comments = c(
+    glue("- Classification accuracy for {current_year} is {scales::percent(Accuracy_SpendValue$spend_percent[nrow(Accuracy_SpendValue)])}"),
+    glue("- On an average the classification accuracy YOY is around {scales::percent(mean(Accuracy_SpendValue$spend_percent))}")
+  )
+) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+
+<!-- ## Accuracy based on Supplier Count -->
+<!-- ```{r Accuracy_SupplierCount,  fig.dim = c(7, 3), echo = FALSE, ft.align="left"} -->
+<!-- full_data %>% -->
+<!--   group_by(Year, Validation.Status) %>% -->
+<!--   select(ElectrifAi_VendorID) %>% -->
+<!--   summarise(unique_vc = n_distinct(ElectrifAi_VendorID)) %>% -->
+<!--   mutate(validation_vc = if_else( -->
+<!--     Validation.Status == 'AGREED', -->
+<!--     ((unique_vc * 95) / 100), -->
+<!--     if_else(Validation.Status == 'TO BE REVIEWED', ((unique_vc * -->
+<!--                                                        70) / 100), 0) -->
+<!--   )) %>% -->
+<!--   summarise(unique_vc = sum(unique_vc), -->
+<!--             validation_vc = sum(validation_vc)) %>% -->
+<!--   mutate(vc_percent = validation_vc / unique_vc, -->
+<!--          vc_percent_label = scales::percent( -->
+<!--     validation_vc / unique_vc, -->
+<!--     suffix = "%", -->
+<!--     accuracy = 1 -->
+<!--   )) %>% -->
+<!--   mutate(Year = as.factor(Year)) %>%  -->
+<!--   ggplot(aes(x = Year, y = vc_percent)) + -->
+<!--   geom_bar(stat = "identity", fill = "steelblue") + -->
+<!--   geom_text( -->
+<!--     aes(label = vc_percent_label), -->
+<!--     vjust = 1.6, -->
+<!--     color = "white", -->
+<!--     size = 3.5 -->
+<!--   ) + -->
+<!--   scale_y_continuous(labels = scales::percent_format( -->
+<!--     suffix = "%", -->
+<!--     accuracy = 1 -->
+<!--   ), limits = c(0,1)) + -->
+<!--   labs(# title='Accuracy based on Spend Value', -->
+<!--     x = 'Year', -->
+<!--     y = 'Spend Percent') + -->
+<!--   theme_classic() + -->
+<!--   theme( -->
+<!--     axis.text.x = element_text(size = 8.5), -->
+<!--     legend.position = "none", -->
+<!--     text = element_text(face = "bold"), -->
+<!--     # axis.text.y = element_text(size = 8.5), -->
+<!--     axis.text.y = element_blank(), -->
+<!--     # axis.title.x = element_text(size = 8.5), -->
+<!--     axis.title.x = element_blank(), -->
+<!--     axis.title.y = element_text(size = 8.5) -->
+<!--   ) -->
+<!-- ``` -->
+
+## Accuracy based on Region
+```{r Accuracy_Region, echo = FALSE, fig.dim = c(7, 3.5), ft.align="left"}
+Accuracy_Region = validation_data %>%
+  filter(Category %in% str_to_title(category_filter)) %>%
+  filter(Region %in% c(region_filter)) %>%
+   group_by(Region, Year) %>%
+   select(Spend.Total, validation_spend) %>%
+   summarise(
+     spend_total = sum((Spend.Total), na.rm = TRUE),
+     validation_total = sum((validation_spend), na.rm = TRUE),
+     spend_percent = ((validation_total / spend_total))
+   ) %>%
+   mutate(
+     color_category = case_when(
+       spend_percent < 0.85 ~ "below 85",
+       spend_percent >= 0.85 & spend_percent < 0.90 ~ "between 85 and 90",
+       spend_percent >= 0.90 ~ "above 90"
+     ),
+     Year = as.factor(Year)
+   )
+
+Accuracy_Region_avg = validation_data %>%
+  filter(Category %in% str_to_title(category_filter)) %>%
+   group_by(Region, Year) %>%
+   select(Spend.Total, validation_spend) %>%
+   summarise(
+     spend_total = sum((Spend.Total), na.rm = TRUE),
+     validation_total = sum((validation_spend), na.rm = TRUE),
+     spend_percent = ((validation_total / spend_total))
+   ) %>%
+   group_by(Region) %>%
+   summarise(average_percentage = scales::percent(mean(spend_percent), accuracy = 0.1)) %>%
+   arrange(desc(average_percentage))
+
+Accuracy_Region %>%
+   ggplot(aes(x = Region, y = spend_percent, fill = color_category)) +
+   geom_bar(stat = "identity", position = "dodge") +
+   geom_text(
+     aes(label = scales::percent(spend_percent, accuracy = 1)),
+     vjust = -0.5, size = 3) +
+   facet_grid(~Year) +
+   scale_y_continuous(labels = scales::percent, limits = c(0,1)) +
+   scale_fill_manual(values = c("below 85" = "#FFC5D0", "between 85 and 90" = "#E2D4A8", "above 90" = "#A8E1BF")) +
+   theme_minimal() +
+   labs(y = "Classification Accuracy", fill = "Color Category") +
+   theme(
+     axis.text.x = element_text(angle = 90, hjust = 1),
+     panel.grid.major = element_blank(),
+     panel.grid.minor = element_blank(),
+     legend.position = "none",
+     text = element_text(face = "bold"),
+     axis.text.y = element_blank(),
+     # axis.title.x = element_text(size = 8.5),
+     axis.title.x = element_blank(),
+     axis.title.y = element_text(size = 8.5))
+```
+```{r Region_Spend_Accuracy_Comments, echo = FALSE, ft.align="left"}
+run_linebreak()
+# Create the comments
+data.frame(
+  Comments = c(
+    glue("- The average Classification accuracy YOY for {Accuracy_Region_avg$Region[1]} is {Accuracy_Region_avg$average_percentage[1]}"))
+) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+
+\newpage
+## Accuracy based on Sub Vertical `r current_year`
+```{r Accuracy_Sub_Vertical, echo = FALSE, ft.align="left"}
+data %>%
+  filter(Year == current_year) %>%
+  pivot_table(.rows = Sub.vertical,
+              .columns = Validation.Status,
+              .values = ~ round(sum(Spend.Total))) %>%
+  mutate(across(-Sub.vertical, ~ scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM")(.))) %>%
+  rename_all(stringr::str_to_title) %>%
+  mutate(Sub.vertical = stringr::str_to_title(Sub.vertical)) %>%
+  flextable() %>%
+  theme_booktabs() %>%
+  FitFlextableToPage() %>%
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  # bold(j = "Sub.Category", bold = TRUE, part = 'body') %>%
+  # bg(j = "Sub.Category", bg = '#A7C6DD', part = 'all') %>%
+  bold(j = "Sub.vertical", bold = TRUE, part = 'all') %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  # purrr::partial(rename_if_exists, old_name = "AGREED", new_name = "Agreed") %>%
+  # purrr::partial(rename_if_exists, old_name = "TO BE REVIEWED", new_name = "To Be Reviewed") %>%
+  # purrr::partial(rename_if_exists, old_name = "DISPUTED", new_name = "Dispute") %>%
+  set_header_labels(values = list(Sub.vertical = "Sub Vertical")) %>%
+  border_outer(border = table_border) %>%
+  align(align = 'center', part = 'all')
+```
+
+## Accuracy based on Category `r current_year`
+```{r Accuracy_Category, eval=!any(data$Sub.vertical %in% c("LOGISTICS")),  echo = FALSE, ft.align="left"}
+Accuracy_Category = data %>%
+  filter(Year == current_year) %>%
+  pivot_table(.rows = Category,
+              .columns = Validation.Status,
+              .values = ~ round(sum(Spend.Total))) %>%
+  
+  mutate(Category = replace(Category, is.na(Category), "Unknown")) %>%
+  mutate(across(-Category, ~ replace_na(., 0))) %>%
+  mutate(across(-Category, ~ scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM")(.))) %>%
+  rename_all(stringr::str_to_title) %>%
+  mutate(Category = stringr::str_to_title(Category)) %>%
+  arrange(desc(Agreed))
+
+Accuracy_Category %>%
+  flextable() %>%
+  theme_booktabs() %>%
+  FitFlextableToPage() %>%
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  # bold(j = "Sub.Category", bold = TRUE, part = 'body') %>%
+  # bg(j = "Sub.Category", bg = '#A7C6DD', part = 'all') %>%
+  bold(j = "Category", bold = TRUE, part = 'all') %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  set_header_labels(
+    values = list(
+      Category = "Category"
+    )
+  ) %>%
+  border_outer(border = table_border) %>%
+  align(align = 'center', part = 'all')
+```
+
+```{r Cat_Sub_Cat_Accuracy_Comments, echo = FALSE, ft.align="left"}
+run_linebreak()
+# Create the comments
+data.frame(
+  Comments = c(
+    glue("- {Accuracy_Category$Sub.category[1]} has {Accuracy_Category$`To Be Reviewed`[1]} spend which can be reviewed to boost the accuracy further in this space."),
+    glue("- Team should look to review xxxxx"),
+    glue("- The GSI team is reviewing disputed vendors worth $MM to make sure they are moved out of xxxxx")
+  )
+) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+
+\newpage
+# Vendor Consolidation
+## Spend and Vendor Parent by Region `r current_year`
+```{r Vendor_Spend_Region, echo = FALSE, ft.align="left"}
+data %>%
+  filter(Year == current_year) %>%
+  group_by(Region) %>%
+  select(Spend.Total, ElectrifAi_ParentID) %>%
+  summarise(
+    spend = sum(Spend.Total),
+    parent = n_distinct(ElectrifAi_ParentID),
+    avg_spend_parent = round(spend / parent)
+  ) %>%
+  mutate(spend_percent = scales::percent(spend/sum(spend), accuracy = 1, suffix = "%")) %>%
+  arrange(desc(spend)) %>%
+  flextable(col_keys = c(
+      "Region",
+      "spend",
+      "parent",
+      "avg_spend_parent"
+    )) %>%
+  set_formatter(values = c(
+    spend = scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM"),
+    avg_spend_parent = scales::dollar_format(scale = .0001, prefix = "$", suffix = "M")
+  )) %>%
+  theme_booktabs() %>%
+  FitFlextableToPage() %>%
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  # bold(j = "Region", bold = TRUE, part = 'body') %>%
+  # bg(j = "Region", bg = '#A7C6DD', part = 'all') %>%
+  bold(j = "Region", bold = TRUE, part = 'all') %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  set_header_labels(values = list(
+    spend = "Spend",
+    parent = "# Vendor Parent",
+    avg_spend_parent = "Avg Spend / Parent"
+  )) %>%
+  align(align = 'center', part = 'all')
+
+```
+
+
+## Spend and Vendor Parent by Spend Bucket `r current_year`
+```{r Spend_Bucket, echo = FALSE, fig.width = 7, ft.align="left"}
+# Need to add 0 in place of NA
+Spend_Bucket = data %>%
+  filter(Year %in% current_year) %>%
+  group_by(Spend.Bucket) %>%
+  select(Spend.Total, ElectrifAi_ParentID) %>%
+  summarise(
+    total_spend = sum((Spend.Total), na.rm = TRUE),
+    bucket_count = n_distinct(ElectrifAi_ParentID)) %>%
+  mutate(Spend.Bucket = factor(
+    Spend.Bucket,
+    levels = c(
+      "<1M",
+      "1M-5M",
+      "5M-10M",
+      "10M-50M",
+      "50M-100M",
+      "100M-500M",
+      "500M-1MM",
+      "1MM-10MM",
+      "10MM-100MM",
+      ">100MM"
+    )
+  ),
+  total_spend_formated = scales::dollar(total_spend, scale = .000001, prefix = "$", suffix = "MM"))
+
+Spend_Bucket_Mid_Value = Spend_Bucket %>% 
+  filter(Spend.Bucket %in% c("10M-50M", "50M-100M", "100M-500M")) %>%
+  janitor::adorn_totals("row") %>%
+  mutate(total_spend_formated = scales::dollar(total_spend, scale = .000001, prefix = "$", suffix = "MM"))
+
+Spend_Bucket %>% 
+  ggplot(aes(x = Spend.Bucket, y = bucket_count, fill = Spend.Bucket)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = bucket_count), vjust = -0.5, size = 3) +
+  geom_text(aes(label = total_spend_formated), vjust = 1.5, size = 3, colour = "white") +
+  labs(# title='Vendor Parent Count by Spend Value',
+    x = 'Spend Bucket',
+    y = 'Count') +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 8.5),
+    legend.position = "none",
+    text = element_text(face = "bold"),
+    axis.text.y = element_blank(),
+    axis.title.x = element_text(size = 8.5),
+    axis.title.y = element_text(size = 8.5)
+  )
+# colorspace::scale_fill_discrete_qualitative(palette = "Pastel 1")
+```
+
+```{r Spend_Bucket_Comments, echo = FALSE, ft.align="left"}
+# Create the comments
+data.frame(
+  Comments = c(
+    glue("- {Spend_Bucket_Mid_Value$bucket_count[4]} vendor lie in the buckets ranging from 10M to 500M with a spend of {Spend_Bucket_Mid_Value$total_spend_formated[4]}.")
+  )
+) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+
+\newpage
+## Spend Segmentation by Sub Vertical YOY
+```{r Spend_Segmentation_Category_YOY_Plot, echo = FALSE, fig.dim = c(7, 2.35), ft.align="left"}
+
+Spend_Segmentation_Sub_Vertical_YOY = data %>%
+  #filter(Year == current_year) %>%
+  group_by(Year, ElectrifAi_ParentID) %>%
+  summarise(TotalSpend = round(sum(Spend.Total))) %>%
+  mutate(Rank = dense_rank(desc(TotalSpend))) %>%
+  mutate(Group = case_when(
+    Rank <= 10 ~ "Top10",
+    Rank <= 30 ~ "Next20",
+    Rank <= 50 ~ "Next20ExcludingTop30",
+    TRUE ~ "RemainingExcludingTop50"
+  )) %>% ungroup() %>%
+  group_by(Year, Group, ElectrifAi_ParentID) %>%
+  summarise(GroupSpend = sum(TotalSpend), .groups = 'drop') %>%
+  pivot_wider(names_from = Group, values_from = GroupSpend, values_fill = 0) %>%
+  group_by(Year) %>%
+  summarise(
+    ParentCount = n_distinct(ElectrifAi_ParentID),
+    TotalSpend = sum(Top10, Next20, Next20ExcludingTop30, RemainingExcludingTop50),
+    SpendTop10 = sum(Top10),
+    SpendNext20 = sum(Next20),
+    SpendNext20ExcludingTop30 = sum(Next20ExcludingTop30),
+    SpendRemainingExcludingTop50 = sum(RemainingExcludingTop50)
+  ) %>%
+  mutate(
+    PercentTop10 = (SpendTop10 / TotalSpend),
+    PercentNext20 = (SpendNext20 / TotalSpend),
+    PercentNext20ExcludingTop30 = (SpendNext20ExcludingTop30 / TotalSpend),
+    PercentRemainingExcludingTop50 = (SpendRemainingExcludingTop50 / TotalSpend),
+    Year = as.factor(Year)
+  )  %>% select(
+    -SpendTop10,-SpendNext20,-SpendNext20ExcludingTop30,-SpendRemainingExcludingTop50,-ParentCount,-TotalSpend
+  ) %>%
+  pivot_longer(!Year, names_to = "vendor_bucket", values_to = "bucket_percent") %>%
+  mutate(vendor_bucket = factor(
+    vendor_bucket,
+    levels = rev(c("PercentTop10", "PercentNext20", "PercentNext20ExcludingTop30", "PercentRemainingExcludingTop50")))) 
+
+Spend_Segmentation_Sub_Vertical_YOY %>%
+  ggplot(aes(x = bucket_percent, y = Year, fill = vendor_bucket)) +
+  geom_bar(stat = "identity", position = "fill") +
+  geom_text(aes(label=scales::percent(
+    bucket_percent,
+    suffix = "%",
+    accuracy = 1L
+  )), position=position_fill(vjust = 0.5), size = 3) +
+  scale_x_continuous(labels = scales::percent_format(
+    suffix = "%",
+    accuracy = 1
+  ), limits = c(0,1)) +
+  labs(fill = 'Spend Segmentation',
+    x = 'Spend %',
+    y = 'Year') +
+  guides(fill = guide_legend(
+    nrow = 1,
+    title.position = "top",
+    label.position = "bottom",
+    reverse = TRUE
+  )) +
+  scale_fill_manual(values = rev(c( "#FFC5D0", "#D4D8A7", "#99E2D8", "#D5D0FC")), 
+                    labels = rev(c(
+    "Spend per Top 10 Vendor Parent",
+    "Spend per Next 20 Vendor Parent",
+    "Spend per Next 20 Vendor Parent ",
+    "Spend per Tail Vendor Parent"))) +
+  theme_classic() +
+  theme(legend.position = "bottom", 
+        text = element_text(face = "bold"), 
+        # axis.text.y = element_blank(),
+        legend.key.size = unit(0.5, "cm"),
+        legend.key.height = unit(0.5, "cm"),
+        legend.text = element_text(size = 7),
+        legend.title = element_text(size = 8.5),
+        axis.title.x = element_text(size = 8.5),
+        axis.title.y = element_text(size = 8.5),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 8.5)
+        )
+```
+
+```{r Spend_Segmentation_YOY_Comments, echo = FALSE, ft.align="left"}
+# Create the comments
+# Assume df is your data frame
+top10_2023 <- Spend_Segmentation_Sub_Vertical_YOY %>% filter(Year == "2023" & vendor_bucket == "PercentTop10") %>% pull(bucket_percent)
+top10_2022 <- Spend_Segmentation_Sub_Vertical_YOY %>% filter(Year == "2022" & vendor_bucket == "PercentTop10") %>% pull(bucket_percent)
+tail_2023 <- Spend_Segmentation_Sub_Vertical_YOY %>% filter(Year == "2023" & vendor_bucket == "PercentRemainingExcludingTop50") %>% pull(bucket_percent)
+tail_2022 <- Spend_Segmentation_Sub_Vertical_YOY %>% filter(Year == "2022" & vendor_bucket == "PercentRemainingExcludingTop50") %>% pull(bucket_percent)
+
+tail_change_direction <- ifelse(tail_2023 - tail_2022 > 0, "increased", "decreased")
+
+# Create the data frame
+data.frame(
+  Comments = c(
+    glue("- Spend by Top 10 vendors during 2023 was {scales::percent(top10_2023)} compared to {scales::percent(top10_2022)} in 2022 indicating consolidation during the period."),
+    glue("- Spend by tail vendors {tail_change_direction} by {scales::percent(abs(tail_2023 - tail_2022))} during the year.")
+  )
+) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+
+## Spend Segmentation by Category `r current_year`
+```{r Vendor_Count_Spend_Value_Category, echo = FALSE, ft.align="left"}
+required_columns = c("Top10", "Next20", "Next20ExcludingTop30", "RemainingExcludingTop50")
+
+Spend_Segmentation_Category = data %>%
+  filter(Year == current_year) %>%
+  group_by(Category, ElectrifAi_ParentID) %>%
+  summarise(TotalSpend = round(sum(Spend.Total))) %>%
+  mutate(Rank = dense_rank(desc(TotalSpend))) %>%
+  mutate(Group = case_when(
+    Rank <= 10 ~ "Top10",
+    Rank <= 30 ~ "Next20",
+    Rank <= 50 ~ "Next20ExcludingTop30",
+    TRUE ~ "RemainingExcludingTop50"
+  )) %>%
+  ungroup() %>%
+  mutate(Category = replace_na(Category, "Unknown")) %>%
+  group_by(Category, Group, ElectrifAi_ParentID) %>%
+  summarise(GroupSpend = sum(TotalSpend), .groups = 'drop') %>%
+  pivot_wider(names_from = Group, values_from = GroupSpend, values_fill = 0) %>%
+  # Add the missing columns with values of 0
+  add_column(!!!setNames(rep(list(0), length(setdiff(required_columns, names(.)))), setdiff(required_columns, names(.)))) %>%
+  group_by(Category) %>%
+  summarise(
+    ParentCount = n_distinct(ElectrifAi_ParentID),
+    TotalSpend = sum(Top10, Next20, Next20ExcludingTop30, RemainingExcludingTop50),
+    SpendTop10 = sum(Top10),
+    SpendNext20 = sum(Next20),
+    SpendNext20ExcludingTop30 = sum(Next20ExcludingTop30),
+    SpendRemainingExcludingTop50 = sum(RemainingExcludingTop50)
+  ) %>%
+  mutate(
+    Category = stringr::str_to_title(Category),
+    PercentTop10 = scales::percent(SpendTop10 / TotalSpend, suffix = "%", accuracy = 1),
+    PercentNext20 = scales::percent(SpendNext20 / TotalSpend, suffix = "%", accuracy = 1),
+    PercentNext20ExcludingTop30 = scales::percent(SpendNext20ExcludingTop30 / TotalSpend, suffix = "%", accuracy = 1),
+    PercentRemainingExcludingTop50 = scales::percent(SpendRemainingExcludingTop50 / TotalSpend, suffix = "%", accuracy = 1)
+  ) %>%
+  select(
+    -SpendTop10,-SpendNext20,-SpendNext20ExcludingTop30,-SpendRemainingExcludingTop50
+  ) %>%
+  arrange(desc(TotalSpend)) 
+
+Spend_Segmentation_Category %>%
+  flextable() %>%
+  set_formatter(TotalSpend = scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM")) %>%
+  theme_booktabs() %>%
+  width(j = c("Category"), width = 2.5) %>%
+  width(j = c("TotalSpend"), width = 0.90) %>%
+  width(j = c("ParentCount", "PercentTop10", "PercentNext20", "PercentNext20ExcludingTop30", "PercentRemainingExcludingTop50"), width = 0.70) %>%
+  FitFlextableToPage() %>%
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  # bold(j = "Category", bold = TRUE, part = 'body') %>%
+  # bg(j = "Category", bg = '#A7C6DD', part = 'all') %>%
+  bold(j = "Category", bold = TRUE, part = 'all') %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  set_header_labels(
+    values = list(
+      Category = "Category",
+      ParentCount = "# Vendor Parent",
+      TotalSpend = "Spend",
+      PercentTop10 = "% Top 10 Vendor Parent",
+      PercentNext20 = "% Next 20 Vendor Parent",
+      PercentNext20ExcludingTop30 = "% Next 20 Vendor Parent ",
+      PercentRemainingExcludingTop50 = "% Rest Vendor Parent"
+    )
+  ) %>%
+  align(align = 'center', part = 'all')
+
+```
+
+```{r Spend_Segmentation_Category_Plot, echo = FALSE, fig.dim = c(7, 3.5), ft.align="left"}
+data %>%
+  filter(Year == current_year) %>%
+  group_by(Category, ElectrifAi_ParentID) %>%
+  summarise(TotalSpend = round(sum(Spend.Total))) %>%
+  mutate(Rank = dense_rank(desc(TotalSpend))) %>%
+  mutate(Group = case_when(
+    Rank <= 10 ~ "Top10",
+    Rank <= 30 ~ "Next20",
+    Rank <= 50 ~ "Next20ExcludingTop30",
+    TRUE ~ "RemainingExcludingTop50"
+  )) %>%
+  ungroup() %>%
+  mutate(Category = replace_na(Category, "Unknown")) %>%
+  group_by(Category, Group, ElectrifAi_ParentID) %>%
+  summarise(GroupSpend = sum(TotalSpend), .groups = 'drop') %>%
+  pivot_wider(names_from = Group, values_from = GroupSpend, values_fill = 0) %>%
+  # Add the missing columns with values of 0
+  add_column(!!!setNames(rep(list(0), length(setdiff(required_columns, names(.)))), setdiff(required_columns, names(.)))) %>%
+  group_by(Category) %>%
+  summarise(
+    ParentCount = n_distinct(ElectrifAi_ParentID),
+    TotalSpend = sum(Top10, Next20, Next20ExcludingTop30, RemainingExcludingTop50),
+    SpendTop10 = sum(Top10),
+    SpendNext20 = sum(Next20),
+    SpendNext20ExcludingTop30 = sum(Next20ExcludingTop30),
+    SpendRemainingExcludingTop50 = sum(RemainingExcludingTop50)
+  ) %>%
+  filter(!Category %in% c("Unknown")) %>%
+  mutate(
+    PercentTop10 = (SpendTop10 / TotalSpend),
+    PercentNext20 = (SpendNext20 / TotalSpend),
+    PercentNext20ExcludingTop30 = (SpendNext20ExcludingTop30 / TotalSpend),
+    PercentRemainingExcludingTop50 = (SpendRemainingExcludingTop50 / TotalSpend)
+  ) %>%
+  select(
+    -SpendTop10,-SpendNext20,-SpendNext20ExcludingTop30,-SpendRemainingExcludingTop50,-ParentCount,-TotalSpend
+  ) %>%
+  pivot_longer(!Category, names_to = "vendor_bucket", values_to = "bucket_percent") %>%
+  mutate(Category = stringr::str_to_title(Category),
+         vendor_bucket = factor(
+    vendor_bucket,
+    levels = c("PercentTop10", "PercentNext20", "PercentNext20ExcludingTop30", "PercentRemainingExcludingTop50"))) %>%
+  ggplot(aes(x = Category, y = bucket_percent, fill = vendor_bucket)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label=scales::percent(
+    bucket_percent,
+    suffix = "%",
+    accuracy = 1L
+  )), position=position_dodge(width=0.9), vjust=-0.25, size = 3) +
+  scale_y_continuous(labels = scales::percent_format(
+    suffix = "%",
+    accuracy = 1
+  ), limits = c(0,1)) +
+  labs(fill = 'Spend Segmentation',
+    x = 'Category',
+    y = 'Spend %') +
+  colorspace::scale_fill_discrete_qualitative(palette = "Pastel 1", labels = c(
+    "Spend per Top 10 Vendor Parent",
+    "Spend per Next 20 Vendor Parent",
+    "Spend per Next 20 Vendor Parent ",
+    "Spend per Tail Vendor Parent")) +
+  guides(fill = guide_legend(
+    nrow = 1,
+    title.position = "top",
+    label.position = "bottom"
+  )) +
+  theme_classic() +
+  theme(legend.position = "bottom", 
+        text = element_text(face = "bold"), 
+        axis.text.y = element_blank(),
+        legend.key.size = unit(0.5, "cm"),
+        legend.key.height = unit(0.5, "cm"),
+        legend.text = element_text(size = 7),
+        legend.title = element_text(size = 8.5),
+        axis.title.x = element_text(size = 8.5),
+        axis.title.y = element_text(size = 8.5),
+        axis.text.x = element_text(size = 8.5),
+        # axis.text.y = element_text(size = 8.5)
+        )
+```
+
+```{r Spend_Segmentation_Cat_Comments, echo = FALSE, ft.align="left"}
+# Create the comments
+# Create the data frame
+data.frame(
+  Comments = c(
+    glue("- {Spend_Segmentation_Category$Category[1]} has the highest spend of {scales::dollar(Spend_Segmentation_Category$TotalSpend[1], scale = .000001, prefix = '$', suffix = 'MM')} out of which top 10 vendor has {Spend_Segmentation_Category$PercentTop10[1]} spend followed by {Spend_Segmentation_Category$Category[2]} with a spend of {scales::dollar(Spend_Segmentation_Category$TotalSpend[2], scale = .000001, prefix = '$', suffix = 'MM')} out of which top 10 vendor has {Spend_Segmentation_Category$PercentTop10[2]}")
+)) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+
+\newpage
+# Geo View
+## The Top 10 Spend Country with the Highest Spending `r current_year`
+```{r Spend_Country, echo = FALSE, fig.width = 7, ft.align="left"}
+# COuntry
+Country = data %>%
+  filter(Year == current_year) %>%
+  group_by(Country) %>%
+  select(Country, Spend.Total, ElectrifAi_ParentID) %>%
+  summarise(
+    parent_vendor = n_distinct(ElectrifAi_ParentID),
+    spend_total = sum(Spend.Total)
+  ) %>%
+  mutate(
+    COWcode = countrycode(Country, origin = 'country.name', destination = 'iso3c'),
+    spend_percent = as.numeric(scales::percent(
+      spend_total / sum(spend_total),
+      accuracy = 0.01,
+      suffix = ""
+    )),
+    spend_bucket = if_else(
+      spend_percent > 10,
+      "> 10%",
+      if_else(
+        spend_percent > 5 & spend_percent <= 10,
+        "5%-10%",
+        if_else(
+          spend_percent > 4 & spend_percent <= 5,
+          "4%-5%",
+          if_else(
+            spend_percent > 3 & spend_percent <= 4,
+            "3%-4%",
+            if_else(
+              spend_percent > 2 & spend_percent <= 3,
+              "2%-3%",
+              if_else(
+                spend_percent > 1 & spend_percent <= 2,
+                "1%-2%",
+                if_else(spend_percent > 0.05 &
+                          spend_percent <= 1,
+                        "0.05%-1%",
+                        "< 0.05%")
+              )
+            )
+          )
+        )
+      )
+    )
+  ) %>% arrange(desc(spend_total)) %>%
+  mutate(spend_bucket = factor(
+    spend_bucket,
+    levels = c(
+      "> 10%",
+      "5%-10%",
+      "4%-5%",
+      "3%-4%",
+      "2%-3%",
+      "1%-2%",
+      "0.05%-1%",
+      "< 0.05%"
+    )
+  ))
+
+Country %>% 
+  filter(!Country %in% c("NOT AVAILABLE")) %>%
+  select(-spend_bucket, -COWcode) %>%
+  arrange(desc(spend_total)) %>%
+  head(n = 10) %>%
+  flextable() %>%
+  set_formatter(values = c(spend_total = scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM"))) %>%
+  theme_booktabs() %>%
+  FitFlextableToPage() %>%
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  # bold(j = "Country", bold = TRUE, part = 'body') %>%
+  # bg(j = "Country", bg = '#A7C6DD', part = 'all') %>%
+  bold(j = "Country", bold = TRUE, part = 'all') %>%
+  bg(
+    i = ~ spend_percent > 10,
+    bg = "#7D0025",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 10,
+    bg = "#DA3500",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 5,
+    bg = "#F39300",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 4,
+    bg = "#585858",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 3,
+    bg = "#CE9758",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 2,
+    bg = "#74A56E",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 1,
+    bg = "#0072B4",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 0.05,
+    bg = "#DAFF47",
+    part = "body"
+  ) %>%
+  colformat_num(j = 'spend_percent', suffix = "%") %>%
+  color(color = "white", part = "body") %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  # delete_columns(j = 'spend_percent_2') %>%
+  set_header_labels(values = list(
+    parent_vendor = "# Vendor Parent",
+    spend_total = "Spend",
+    spend_percent = "Spend %"
+  )) %>%
+  align(align = 'center', part = 'all')
+
+# Merged Data
+pal_geo = c("#7D0025", "#DA3500", "#F39300", "#585858", "#CE9758", "#74A56E", "#0072B4", "#DAFF47")
+labs_geo = c("> 10%", "5%-10%", "4%-5%", "3%-4%", "2%-3%", "1%-2%", "0.05%-1%", "< 0.05%", "0")
+
+world %>%
+  left_join(Country, by = c("adm0_a3" = "COWcode")) %>%
+  # filter(!is.na(spend_bucket)) %>%
+  arrange(desc(spend_total)) %>%
+  ggplot() +
+  geom_sf(aes(fill = spend_bucket), color = NA) +
+  labs(fill = "Spend $") +
+  scale_fill_manual(values = pal_geo,
+                    drop = FALSE,
+                    labels = labs_geo,
+                    na.value = "lightgray"
+                     # Legend
+                     # guide = guide_legend(direction = "horizontal",
+                     #                     nrow = 1,
+                     #                     label.position = "bottom")
+                    ) +
+  guides(
+    fill=guide_legend(
+      nrow=1,
+      title.position="top",
+      label.position="bottom"
+    )
+  ) +
+  theme_void() + theme(legend.position = "bottom", 
+                       text = element_text(face = "bold"), 
+                       legend.key.size = unit(0.5, "cm"), 
+                       legend.key.height = unit(0.5, "cm"), 
+                       legend.text = element_text(size = 7), 
+                       legend.title = element_text(size = 8.5), 
+                       axis.title.x = element_text(size = 8.5), 
+                       axis.title.y = element_text(size = 8.5), 
+                       axis.text.x = element_text(size = 8.5), 
+                       axis.text.y = element_text(size = 8.5))
+
+```
+
+```{r Country_Comments, echo = FALSE, ft.align="left"}
+# Create the comments
+# Create the data frame
+data.frame(
+  Comments = c(
+    glue("- Enter Comment #1"),
+    glue("- Enter Comment #2")
+)) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+
+\newpage
+## The Top 10 Vendor Country with the Highest Spending `r current_year`
+```{r Spend_Vendor_Country, echo = FALSE, fig.dim = c(7, 4), ft.align="left"}
+# Vendor Country
+vendor_country = data %>%
+  filter(Year == current_year) %>%
+  group_by(Vendor.Country) %>%
+  select(Vendor.Country, Spend.Total, ElectrifAi_ParentID) %>%
+  summarise(
+    parent_vendor = n_distinct(ElectrifAi_ParentID),
+    spend_total = sum(Spend.Total)
+  ) %>%
+  mutate(
+    COWcode = countrycode(Vendor.Country, origin = 'country.name', destination = 'iso3c'),
+    spend_percent = as.numeric(scales::percent(
+      spend_total / sum(spend_total),
+      accuracy = 0.01,
+      suffix = ""
+    )),
+    spend_bucket = if_else(
+      spend_percent > 10,
+      "> 10%",
+      if_else(
+        spend_percent > 5 & spend_percent <= 10,
+        "5%-10%",
+        if_else(
+          spend_percent > 4 & spend_percent <= 5,
+          "4%-5%",
+          if_else(
+            spend_percent > 3 & spend_percent <= 4,
+            "3%-4%",
+            if_else(
+              spend_percent > 2 & spend_percent <= 3,
+              "2%-3%",
+              if_else(
+                spend_percent > 1 & spend_percent <= 2,
+                "1%-2%",
+                if_else(
+                  spend_percent > 0.05 &
+                    spend_percent <= 1,
+                  "0.05%-1%",
+                  "< 0.05%"
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  ) %>% arrange(desc(spend_total)) %>%
+  mutate(spend_bucket = factor(
+    spend_bucket,
+    levels = c(
+      "> 10%",
+      "5%-10%",
+      "4%-5%",
+      "3%-4%",
+      "2%-3%",
+      "1%-2%",
+      "0.05%-1%",
+      "< 0.05%"
+    )
+  ))
+
+vendor_country %>%
+  filter(!Vendor.Country %in% c("NOT AVAILABLE")) %>%
+  select(-spend_bucket, -COWcode) %>%
+  arrange(desc(spend_total)) %>%
+  head(n = 10) %>%
+  flextable() %>%
+  set_formatter(values = c(spend_total = scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM"))) %>%
+  theme_booktabs() %>%
+  FitFlextableToPage() %>%
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  # bold(j = "Country", bold = TRUE, part = 'body') %>%
+  # bg(j = "Country", bg = '#A7C6DD', part = 'all') %>%
+  bold(j = "Vendor.Country", bold = TRUE, part = 'all') %>%
+  bg(
+    i = ~ spend_percent > 10,
+    bg = "#7D0025",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 10,
+    bg = "#DA3500",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 5,
+    bg = "#F39300",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 4,
+    bg = "#585858",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 3,
+    bg = "#CE9758",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 2,
+    bg = "#74A56E",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 1,
+    bg = "#0072B4",
+    part = "body"
+  ) %>%
+  bg(
+    i = ~ spend_percent < 0.05,
+    bg = "#DAFF47",
+    part = "body"
+  ) %>%
+  colformat_num(j = 'spend_percent', suffix = "%") %>%
+  color(color = "white", part = "body") %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  # delete_columns(j = 'spend_percent_2') %>%
+  set_header_labels(values = list(
+    Vendor.Country = "Vendor Country",
+    parent_vendor = "# Vendor Parent",
+    spend_total = "Spend $",
+    spend_percent = "Spend %"
+  )) %>%
+  align(align = 'center', part = 'all')
+
+# Merged Data
+pal_geo = c("#7D0025", "#DA3500", "#F39300", "#585858", "#CE9758", "#74A56E", "#0072B4", "#DAFF47")
+labs_geo = c("> 10%", "5%-10%", "4%-5%", "3%-4%", "2%-3%", "1%-2%", "0.05%-1%", "< 0.05%", "0")
+
+world %>%
+  left_join(vendor_country, by = c("adm0_a3" = "COWcode")) %>%
+  # filter(!is.na(spend_bucket)) %>%
+  arrange(desc(spend_total)) %>%
+  ggplot() +
+  geom_sf(aes(fill = spend_bucket), color = NA) +
+  labs(fill = "Spend $") +
+  scale_fill_manual(values = pal_geo,
+                    drop = FALSE,
+                    labels = labs_geo,
+                    na.value = "lightgray"
+                     # Legend
+                     # guide = guide_legend(direction = "horizontal",
+                     #                     nrow = 1,
+                     #                     label.position = "bottom")
+                    ) +
+  guides(
+    fill=guide_legend(
+      nrow=1,
+      title.position="top",
+      label.position="bottom"
+    )
+  ) +
+  theme_void() + theme(legend.position = "bottom", 
+                       text = element_text(face = "bold"), 
+                       legend.key.size = unit(0.5, "cm"), 
+                       legend.key.height = unit(0.5, "cm"), 
+                       legend.text = element_text(size = 7), 
+                       legend.title = element_text(size = 8.5), 
+                       axis.title.x = element_text(size = 8.5), 
+                       axis.title.y = element_text(size = 8.5), 
+                       axis.text.x = element_text(size = 8.5), 
+                       axis.text.y = element_text(size = 8.5))
+
+```
+
+```{r Vendor_Country_Comments, echo = FALSE, ft.align="left"}
+# Create the comments
+# Create the data frame
+data.frame(
+  Comments = c(
+    glue("- Enter Comment #1"),
+    glue("- Enter Comment #2")
+)) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+
+\newpage
+# Vendor Analysis
+```{r Vendor_Churn, echo = FALSE, ft.align="left"}
+Rank_YOY = data %>%
+  group_by(ElectrifAi_ParentID, Year) %>%
+  summarise(Spend.Total = round(sum(Spend.Total)), .groups = 'drop') %>%
+  pivot_wider(names_from = Year, values_from = Spend.Total, values_fill = 0) %>%
+  left_join(Vendor_ID_Name, by = "ElectrifAi_ParentID") %>%
+  rename(vendor_parent = Vendor.Parent) %>%
+  replace(is.na(.), 0) %>%
+  mutate(!!paste0("Rank ", current_year) := dense_rank(desc(.[[as.character(current_year)]])),
+         !!paste0("Rank ", previous_year) := dense_rank(desc(.[[as.character(previous_year)]]))) %>%
+  mutate(spend_change = .[[as.character(current_year)]] - .[[as.character(previous_year)]],
+         rank_change = .[[paste0("Rank ", previous_year)]] - .[[paste0("Rank ", current_year)]],
+         reason_spend_change = VLOOKUP(
+           ElectrifAi_ParentID, 
+           vendor_description, 
+           Parent.ID, 
+           Reason.for.Spend.growth.decline..Oct.22.to.Sep.23.vs.Oct.21.to.Sep.22.),
+         what_we_buy = VLOOKUP(
+           ElectrifAi_ParentID, 
+           vendor_description, 
+           Parent.ID, 
+           What.are.we.buying.),
+         # product_supported = VLOOKUP(
+         #   ElectrifAi_ParentID, 
+         #   vendor_description, 
+         #   Parent.ID, 
+         #   Abbott.Product...Project.this.supports),
+         division = VLOOKUP(
+           ElectrifAi_ParentID, 
+           vendor_description, 
+           Parent.ID, 
+           Key.Divisions)) %>% 
+  replace(is.na(.), "-") %>%
+  arrange(desc(.[[as.character(current_year)]])) %>%
+  mutate(
+    spend_previous_year_percent = scales::percent((
+      .[[as.character(previous_year)]]/sum(.[[as.character(previous_year)]])),
+      suffix = "%", 
+      accuracy = 1),
+    spend_current_year_percent = scales::percent((
+      .[[as.character(current_year)]]/sum(.[[as.character(current_year)]])),
+      suffix = "%", 
+      accuracy = 1),
+    cumualtive_spend_current_year_percent = scales::percent((
+      cumsum(.[[as.character(current_year)]])/sum(.[[as.character(current_year)]])), 
+      suffix = "%", 
+      accuracy = 1))
+
+New_Vendor = Rank_YOY %>%
+  filter((.[[as.character(previous_year)]]) == 0) %>%
+  arrange(.[[paste0("Rank ", current_year)]]) %>%
+  select(ElectrifAi_ParentID, vendor_parent, as.character(current_year), spend_current_year_percent)
+
+Dropped_vendor = Rank_YOY %>%
+  filter((.[[as.character(current_year)]]) == 0) %>%
+  arrange(.[[paste0("Rank ", previous_year)]]) %>%
+  select(ElectrifAi_ParentID, vendor_parent, as.character(previous_year), spend_previous_year_percent)
+
+vendor_summary = data.frame(
+  `Total Vendor`=c(KPI_Table[[as.character(current_year)]][[2]]),
+  `Dropped vendor`=c(Dropped_vendor %>% summarise(Dropped_vendor = paste(n(), 'Parents were discountinued from 2020 to', previous_year))),
+  `New Vendor`=c(New_Vendor %>% summarise(New_Vendor = paste(n(), 'Parents were added in', current_year))))
+
+
+names(vendor_summary)[1] = paste("Total Vendor", current_year, sep = " ")
+names(vendor_summary)[2] = paste("Dropped Vendor", previous_year, sep = " ")
+names(vendor_summary)[3] = paste("New Vendor", current_year, sep = " ")
+
+```
+
+## Top 10 Vendors – Rank and Spend Movement (Increase/Decrease)
+```{r Vendor_Ranking, echo = FALSE, ft.align="left"}
+Rank_YOY %>%
+  head(n = 10) %>%
+  flextable(
+    col_keys = c(
+      "vendor_parent",
+      paste0("Rank ", current_year),
+      paste0("Rank ", previous_year),
+      "rank_change",
+      as.character(current_year),
+      as.character(previous_year),
+      "spend_change",
+      "spend_current_year_percent",
+      "cumualtive_spend_current_year_percent",
+      "division",
+      "reason_spend_change",
+      "what_we_buy"
+    )
+  ) %>%
+  set_formatter(values = c(
+    setNames(list(scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM")), as.character(current_year)),
+    setNames(list(scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM")), as.character(previous_year)),
+    spend_change = scales::dollar_format(scale = .000001, prefix = "$", suffix = "MM")
+    )) %>%
+  theme_booktabs() %>%
+  width(j = c(
+    "vendor_parent",
+    "what_we_buy", 
+    "reason_spend_change"), width = 1.5) %>%
+  width(j = c(paste0("Rank ", current_year),
+              paste0("Rank ", previous_year),
+              "rank_change"), width = 0.45) %>%
+  width(j = c(as.character(current_year),
+              as.character(previous_year),
+              "spend_change"), width = 0.80) %>%
+  width(j = c("division"), width = 0.66) %>%
+  width(j = c("spend_current_year_percent",
+              "cumualtive_spend_current_year_percent"), width = 0.5) %>%
+  FitFlextableTolandscape() %>%
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  # bold(j = "ElectrifAi_ParentID", bold = TRUE, part = 'all') %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  # set_header_labels(
+  #   values = list(
+  #     # ElectrifAi_ParentID = "Parent ID",
+  #     vendor_parent = "Vendor Parent",
+  #     spend_change = "Movement (Increase/Decrease)",
+  #     spend_current_year_percent = "% 2023",
+  #     cumualtive_spend_current_year_percent = "% Cumualtive 2023",
+  #     product_supported = "Product Supported",
+  #     what_we_buy = "What We Buy",
+  #     reason_spend_change = "Reason For Spend Change"
+  #   )
+  # ) %>%
+set_header_labels(
+  values = setNames(
+    list(
+      "Vendor Parent",
+      "Spend Movement",
+      paste0("% ", current_year),
+      paste0("% Cum ", current_year),
+      "What We Buy",
+      "Reason For Spend Change",
+      "Division",
+      "Rank Movement"
+    ),
+    c(
+      "vendor_parent",
+      "spend_change",
+      "spend_current_year_percent",
+      "cumualtive_spend_current_year_percent",
+      "what_we_buy",
+      "reason_spend_change",
+      "division",
+      "rank_change"
+    )
+  )
+) %>% 
+  align(align = 'center', part = 'all')
+
+# fontsize(size = 7, part = "body")
+# fontsize(size = 8, part = "header")
+```
+
+```{r Vendor_Churn_Comments, echo = FALSE, ft.align="left"}
+run_linebreak()
+# Create the comments
+# Create the data frame
+data.frame(
+  Comments = c(
+    glue("- {Rank_YOY$vendor_parent[1]} is the top vendors with an  {ifelse(Rank_YOY$spend_change[1] > 0, 'increased', 'decreased')} spend of  {scales::dollar(Rank_YOY$spend_change[1], scale = .000001, prefix = '$', suffix = 'MM' )} ({Rank_YOY$spend_current_year_percent[1]}), followed by {Rank_YOY$vendor_parent[2]} with {ifelse(Rank_YOY$spend_change[2] > 0, 'increased', 'decreased')} spend of  {scales::dollar(Rank_YOY$spend_change[2], scale = .000001, prefix = '$', suffix = 'MM' )} ({Rank_YOY$spend_current_year_percent[2]})"),
+    glue("- The cummulative total spend for the top 5 vendors were {Rank_YOY$cumualtive_spend_current_year_percent[5]}")
+)) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableTolandscape()
+```
+
+\newpage
+## New & Dropped Vendors – Count and list of the vendors
+### Vendor Summary
+```{r Vendor_Summary, echo = FALSE, ft.align="left"}
+vendor_summary %>%  
+  flextable() %>% 
+  theme_booktabs() %>%
+  FitFlextableToPage() %>% 
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  align(align = 'center', part = 'all')
+```
+
+### Top 10 New Vendor
+```{r New_Vendor, echo = FALSE, ft.align="left"}
+New_Vendor %>% 
+  head(n=10) %>% 
+  flextable() %>%
+  set_formatter(values = c(
+    setNames(list(scales::dollar_format(scale = .0001, prefix = "$", suffix = "M")), as.character(current_year)))) %>%
+  theme_booktabs() %>%
+  width(j = c("vendor_parent"), width = 2.5) %>%
+  FitFlextableToPage() %>% 
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  bold(j = "ElectrifAi_ParentID", bold = TRUE, part = 'all') %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  set_header_labels(values = list(ElectrifAi_ParentID = "Parent ID",
+                                  vendor_parent = "Vendor Parent",
+                                  spend_current_year_percent = paste0("% ",as.character(current_year)))) %>%
+  align(align = 'center', part = 'all')
+```
+
+### Top 10 Dropped Vendor
+```{r Dropped_Vendor, echo = FALSE, ft.align="left"}
+Dropped_vendor %>% 
+  head(n=10) %>% 
+  flextable() %>% 
+  set_formatter(values = c(
+    setNames(list(scales::dollar_format(scale = .0001, prefix = "$", suffix = "M")), as.character(previous_year)))) %>%
+  theme_booktabs() %>%
+  width(j = c("vendor_parent"), width = 2.5) %>%
+  FitFlextableToPage() %>% 
+  bg(bg = "#A7C6DD", part = 'header') %>%
+  # bg(bg = "#E2E2E2", part = 'body') %>%
+  bold(bold = TRUE, part = 'header') %>%
+  bold(j = "ElectrifAi_ParentID", bold = TRUE, part = 'all') %>%
+  vline(border = officer::fp_border(), part = "body") %>%
+  border_outer(border = table_border) %>%
+  set_header_labels(values = list(ElectrifAi_ParentID = "Parent ID", 
+                                  vendor_parent = "Vendor Parent",
+                                  spend_previous_year_percent = paste0("% ", as.character(previous_year)))) %>%
+  align(align = 'center', part = 'all')
+```
+
+\newpage
+# Invoice Volume Analytics
+## Spend and Invoice Volume Comparison `r current_year`
+```{r spend_invoice_comparsion, echo = FALSE, fig.dim = c(7, 4), ft.align="left"}
+spend_invoice_comparsion = data %>% 
+  filter(Year == current_year) %>%
+  group_by(ElectrifAi_ParentID) %>%
+  summarise(
+    spend_total = round(sum(Spend.Total)),
+    invoice_volume = n_distinct(Invoice.Number.Combined),
+    avg_invoice_spend = round(spend_total / invoice_volume)
+  ) %>%
+  mutate(vendor_parent = VLOOKUP(
+      ElectrifAi_ParentID,
+      Vendor_ID_Name,
+      ElectrifAi_ParentID,
+      Vendor.Parent
+    )) %>%
+  arrange(desc(spend_total))
+
+spend_invoice_comparsion_10 = spend_invoice_comparsion %>%
+  head(spend_invoice_comparsion, n = 10) %>%
+  mutate(vendor_parent = reorder(vendor_parent, spend_total, FUN = max)) %>%
+  arrange(desc(spend_total)) 
+
+spend_invoice_comparsion_10 %>%
+  ggplot(aes(y = vendor_parent, fill = vendor_parent)) +
+  geom_col(aes(x = spend_total), fill = "steelblue") +
+  geom_segment(aes(
+    x = 0,
+    xend = invoice_volume / max(invoice_volume) * max(spend_total),
+    yend = after_stat(y)
+  ), color = "black") +
+  geom_point(aes(x = invoice_volume / max(invoice_volume) * max(spend_total)),
+             color = "black",
+             size = 1) +
+  geom_text(aes(
+    x = invoice_volume / max(invoice_volume) * max(spend_total),
+    label = round(invoice_volume, 1)
+  ), hjust = 1.5, vjust = -0.5, size = 3) +  # Adjust vjust to move text below the line and size to reduce font size
+  scale_x_continuous(
+    "Spend Total",
+    labels = scales::dollar_format(
+      scale = .000001,
+      suffix = "MM",
+      prefix = "$",
+      accuracy = 1
+    ),
+    sec.axis = sec_axis(
+      ~ . / max(spend_invoice_comparsion_10$spend_total) * max(spend_invoice_comparsion_10$invoice_volume),
+      name = "Invoice Volume"
+    )
+  ) +
+  scale_y_discrete(labels = function(x) substr(x, 1, 8)) +  # Limit labels to first 8 characters
+  labs(y = "Vendor Parent") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    text = element_text(face = "bold"),
+    axis.title.x = element_text(size = 8.5),
+    axis.title.y = element_text(size = 8.5),
+    axis.text.x = element_text(size = 8.5),
+    axis.text.y = element_text(size = 8.5) 
+  )
+
+```
+
+```{r Invoice_Comments, echo = FALSE, ft.align="left"}
+# Create the comments
+# Create the data frame
+data.frame(
+  Comments = c(
+    glue("- Enter Comment #1"),
+    glue("- Enter Comment #2")
+)) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
+
+## Payment Terms `r current_year`
+```{r Payment_Term, echo = FALSE,fig.dim = c(7, 2.5), ft.align="left"}
+donut_colors = colorspace::qualitative_hcl(4, palette = "Pastel 1")
+
+data %>%
+  group_by(Payment.Status) %>%
+  summarise(count = n()) %>%
+  mutate(percent_count = scales::percent(count / sum(count), accuracy = 1)) %>%
+  mutate(label = paste(Payment.Status, percent_count)) %>%
+  arrange(desc(count)) %>%
+  plot_ly(labels = ~ Payment.Status, values = ~ count) %>%
+  add_pie(
+    hole = 0.6,
+    text = ~ label,
+    textposition = 'outside',
+    textinfo = 'text',
+    insidetextfont = list(size = 8.5),
+    # Change the size of the labels inside the pie slices
+    outsidetextfont = list(size = 8.5)
+  ) %>%  # Change the size of the labels outside the pie slices
+  layout(
+    showlegend = F,
+    xaxis = list(
+      showgrid = FALSE,
+      zeroline = FALSE,
+      showticklabels = FALSE
+    ),
+    yaxis = list(
+      showgrid = FALSE,
+      zeroline = FALSE,
+      showticklabels = FALSE
+    ),
+    colorway = donut_colors,
+    legend = list(
+      orientation = "h",
+      x = 0.5,
+      y = -0.1,
+      xanchor = "center"
+    )
+  )
+```
+
+```{r Payment_Term__Comments, echo = FALSE, ft.align="left"}
+# Create the comments
+# Create the data frame
+data.frame(
+  Comments = c(
+    glue("- Enter Comment #1"),
+    glue("- Enter Comment #2")
+)) %>%
+  # knitr::kable("pandoc", row.names = FALSE, col.names = NULL) %>%
+  flextable() %>%
+  # compose(part = "header", j = ~Comments, value = as_paragraph("")) %>%
+  delete_part(part = "header") %>%
+  border_remove() %>%
+  border_outer() %>%
+  padding(padding = 0) %>%
+  FitFlextableToPage()
+```
